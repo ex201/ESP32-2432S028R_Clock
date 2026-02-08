@@ -4,135 +4,159 @@
 #include <TFT_eSPI.h>
 #include <time.h>
 
-// --- Hardware & WiFi Konfiguration ---
+// --- Hardware Pins (CYD / ESP32-2432S028R) ---
 #define TFT_BL 21
+
+// --- WiFi Konfiguration ---
 const char* ssid     = "DEINE_SSID";
 const char* password = "DEIN_PASSWORT";
 
 // --- API & Intervalle ---
 const char* weatherUrl = "http://api.brightsky.dev/current_weather?lat=51.48&lon=7.86";
 unsigned long lastWeatherUpdate = 0;
-const unsigned long weatherInterval = 15 * 60 * 1000; // 15 Minuten
+const unsigned long weatherInterval = 15 * 60 * 1000; // 15 Min
 
-// --- Farben (E-Paper Style) ---
-#define EPAPER_CREME 0xF7BE
-#define EPAPER_BLACK 0x0000
+// --- Design (E-Paper Palette) ---
+#define EPAPER_CREME 0xF7BE // Warmer Hintergrund
+#define EPAPER_BLACK 0x0000 // Schrift & Linien
 
-// --- Instanzen ---
+// --- Objekte ---
 TFT_eSPI tft = TFT_eSPI();
-TFT_eSprite img = TFT_eSprite(&tft); // Full Screen Sprite für Double Buffering
+TFT_eSprite canvas = TFT_eSprite(&tft); // Double Buffer Sprite
 
-// Globaler Wetter-Speicher
+// Globaler Status
 float currentTemp = 0.0;
-bool weatherLoaded = false;
+bool weatherValid = false;
 
-// --- Hilfsfunktion: CIDR Berechnung ---
+// --- Hilfsfunktion: Subnetz zu CIDR ---
 String getCIDR(IPAddress subnet) {
-  uint32_t mask = (subnet[0] << 24) | (subnet[1] << 16) | (subnet[2] << 8) | (subnet[3]);
-  int count = 0;
-  while (mask > 0) {
-    mask = mask << 1;
-    count++;
+  uint32_t mask = (subnet[0] << 24) | (subnet[1] << 16) | (subnet[2] << 8) | subnet[3];
+  int prefix = 0;
+  for (int i = 0; i < 32; i++) {
+    if ((mask << i) & 0x80000000) prefix++;
   }
-  return "/" + String(count);
+  return "/" + String(prefix);
 }
 
-// --- Wetter API Abfrage ---
+// --- Optimierter Wetter-Abruf mit JSON-Filter ---
 void updateWeather() {
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(weatherUrl);
-    int httpCode = http.GET();
+  if (WiFi.status() != WL_CONNECTED) return;
 
-    if (httpCode == HTTP_CODE_OK) {
-      DynamicJsonDocument doc(2048);
-      deserializeJson(doc, http.getStream());
+  HTTPClient http;
+  http.begin(weatherUrl);
+  
+  int httpCode = http.GET();
+  if (httpCode == HTTP_CODE_OK) {
+    // Filter erstellen: Nur "weather" -> "temperature" interessiert uns
+    JsonDocument filter;
+    filter["weather"]["temperature"] = true;
+
+    JsonDocument doc;
+    deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+    
+    if (doc["weather"].containsKey("temperature")) {
       currentTemp = doc["weather"]["temperature"];
-      weatherLoaded = true;
-      Serial.println("Wetter aktualisiert: " + String(currentTemp) + "°C");
+      weatherValid = true;
+      Serial.printf("Wetter Update: %.1f °C\n", currentTemp);
     }
-    http.end();
+  } else {
+    Serial.printf("HTTP Fehler: %s\n", http.errorToString(httpCode).c_str());
   }
+  http.end();
 }
 
 void setup() {
   Serial.begin(115200);
 
-  // Display Initialisierung
+  // 1. Display Hardware Setup
   tft.init();
-  tft.setRotation(1); // Querformat
+  tft.setRotation(1);
   pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH); // Backlight an
+  digitalWrite(TFT_BL, HIGH);
 
-  // Sprite Buffer (320x240 @ 16bit = 153.6KB RAM)
-  img.createSprite(320, 240);
-  img.setTextColor(EPAPER_BLACK, EPAPER_CREME);
+  // 2. Sprite initialisieren (320x240 Pixel, 16-bit Farbe)
+  if (!canvas.createSprite(320, 240)) {
+    Serial.println("Sprite Fehler! Nicht genug RAM.");
+    while(1);
+  }
 
-  // WiFi & Zeit
+  // 3. Verbindung & Zeit
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
-  
-  // Zeitkonfiguration Berlin inkl. Sommerzeit
+  while (WiFi.status() != WL_CONNECTED) { delay(500); }
+
+  // Berlin Timezone mit automatischer Sommerzeit
+  setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+  tzset();
   configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "de.pool.ntp.org");
 
   updateWeather();
 }
 
 void drawDisplay() {
-  img.fillSprite(EPAPER_CREME);
-  
-  // --- OBEN: System Info (1/6) ---
-  img.setTextDatum(TL_DATUM);
-  img.setFreeFont(&FreeSans9pt7b);
-  String ipInfo = WiFi.localIP().toString() + getCIDR(WiFi.subnetMask());
-  img.drawString(ipInfo, 10, 10);
+  // Hintergrund löschen
+  canvas.fillSprite(EPAPER_CREME);
+  canvas.setTextColor(EPAPER_BLACK, EPAPER_CREME);
 
-  // WLAN Balken zeichnen
-  int32_t rssi = WiFi.RSSI();
-  img.setTextDatum(TR_DATUM);
-  img.drawString(String(rssi) + " dBm", 310, 10);
+  // --- TOP SECTION: Network ---
+  canvas.setTextDatum(TL_DATUM);
+  canvas.setTextFont(2); // Kleine Standard-Schrift
+  String netInfo = WiFi.localIP().toString() + getCIDR(WiFi.subnetMask());
+  canvas.drawString(netInfo, 10, 8);
+
+  // WLAN Signalstärke
+  int rssi = WiFi.RSSI();
+  canvas.setTextDatum(TR_DATUM);
+  canvas.drawString(String(rssi) + " dBm", 310, 8);
   
-  // --- MITTE: Uhrzeit (2/3) ---
+  // Design-Linie Oben
+  canvas.drawFastHLine(0, 35, 320, EPAPER_BLACK);
+
+  // --- MIDDLE SECTION: Clock ---
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
-    char timeStr[6];
+    char timeStr[10];
     strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo);
     
-    img.setTextDatum(MC_DATUM);
-    // Nutze Font 7 für 7-Segment-Optik (Größe 7)
-    img.setTextColor(EPAPER_BLACK, EPAPER_CREME);
-    img.drawString(timeStr, 160, 110, 7); 
+    canvas.setTextDatum(MC_DATUM);
+    // Font 7 ist der 7-Segment Font (Höhe ca. 48px)
+    canvas.drawString(timeStr, 160, 110, 7); 
   }
 
-  // --- UNTEN: Datum & Wetter (1/6) ---
-  char dateStr[20];
+  // Design-Linie Unten
+  canvas.drawFastHLine(0, 180, 320, EPAPER_BLACK);
+
+  // --- BOTTOM SECTION: Date & Weather ---
+  char dateStr[32];
+  // Wochentag kurz + Tag + Monat
   strftime(dateStr, sizeof(dateStr), "%a, %d. %b", &timeinfo);
   
-  img.setTextDatum(BC_DATUM);
-  img.setFreeFont(&FreeSans12pt7b);
-  img.drawString(dateStr, 160, 190);
+  canvas.setTextDatum(BC_DATUM);
+  canvas.setTextFont(4); // Mittlere klare Schrift
+  canvas.drawString(dateStr, 160, 208);
 
-  if (weatherLoaded) {
-    String tempStr = String(currentTemp, 1) + " C";
-    img.setFreeFont(&FreeSansBold18pt7b);
-    img.drawString(tempStr, 160, 230);
-    // Kleiner Kreis für das Grad-Symbol
-    int tempWidth = img.textWidth(tempStr);
-    img.drawCircle(160 + (tempWidth/2) - 15, 210, 3, EPAPER_BLACK);
+  if (weatherValid) {
+    // Temperatur groß
+    canvas.setTextDatum(BC_DATUM);
+    String t = String(currentTemp, 1) + " 'C"; // ' wird im Font oft als Grad genutzt oder händisch
+    canvas.setTextFont(4);
+    canvas.drawString(t, 160, 235);
   }
 
-  // Alles auf einmal auf den Screen pushen (Flackerfrei)
-  img.pushSprite(0, 0);
+  // --- Push to Screen ---
+  canvas.pushSprite(0, 0);
 }
 
 void loop() {
-  // Wetter Timer
+  // Nicht-blockierender Wetter-Update
   if (millis() - lastWeatherUpdate >= weatherInterval) {
     updateWeather();
     lastWeatherUpdate = millis();
   }
 
-  // Display Refresh (z.B. jede Sekunde)
-  drawDisplay();
-  delay(1000); 
+  // Display-Refresh alle 1 Sekunde für die Uhrzeit
+  static unsigned long lastDraw = 0;
+  if (millis() - lastDraw >= 1000) {
+    drawDisplay();
+    lastDraw = millis();
+  }
 }

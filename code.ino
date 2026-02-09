@@ -8,8 +8,8 @@
 #define TFT_BL 21
 
 // --- WiFi Konfiguration ---
-const char* ssid     = "WLAN_SSID";
-const char* password = "WLAN_KENNWORT";
+const char* ssid     = "ITWickede";
+const char* password = "23488351877477215763";
 
 TFT_eSPI tft = TFT_eSPI();
 // Wir nutzen ein kleineres Sprite NUR für die Uhrzeit, um RAM zu sparen
@@ -107,7 +107,11 @@ void drawStaticLayout() {
   
   // Oben links: IP Info (Statisch)
   tft.setTextDatum(TL_DATUM);
-  tft.drawString(WiFi.localIP().toString(), 10, 10, 2);
+  IPAddress ip = WiFi.localIP();
+  IPAddress subnet = WiFi.subnetMask();
+  String cidr = getCIDR(subnet);
+
+  tft.drawString(ip.toString() + cidr, 10, 10, 2);
   drawWiFiSignal(270, 10);
 }
 

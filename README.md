@@ -2,6 +2,8 @@
 ## Bibliotheken
 Stelle sicher, dass du die Bibliotheken  **TFT_eSPI**,  **ArduinoJson** (Version 7)  und die Standard-ESP32-Bibliotheken installiert hast. Da das CYD spezifische Pins nutzt, muss deine  `User_Setup.h`  in der TFT_eSPI Bibliothek korrekt auf das  **ILI9341**  (oder ST7789, je nach Version) konfiguriert sein.
 
+-   `User_Setup.h` liegt i.d.R. unter Documents\Arduino\libraries\TFT_eSPI\User_Setup.h
+
 ## Erläuterungen zur Implementierung
 
 -   **Double Buffering:**  Das gesamte Bild wird zuerst im RAM (im  `img`  Objekt) gezeichnet. Erst der Befehl  `img.pushSprite(0, 0)`  kopiert den fertigen Speicherinhalt in Millisekunden auf das Display. Das verhindert das typische "Zeilenweise Aufbauen" oder Flackern.

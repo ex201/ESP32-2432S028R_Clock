@@ -1,6 +1,6 @@
 
 ## Bibliotheken
-Stelle sicher, dass du die Bibliotheken  **TFT_eSPI**,  **ArduinoJson**  und die Standard-ESP32-Bibliotheken installiert hast. Da das CYD spezifische Pins nutzt, muss deine  `User_Setup.h`  in der TFT_eSPI Bibliothek korrekt auf das  **ILI9341**  (oder ST7789, je nach Version) konfiguriert sein.
+Stelle sicher, dass du die Bibliotheken  **TFT_eSPI**,  **ArduinoJson** (Version 7)  und die Standard-ESP32-Bibliotheken installiert hast. Da das CYD spezifische Pins nutzt, muss deine  `User_Setup.h`  in der TFT_eSPI Bibliothek korrekt auf das  **ILI9341**  (oder ST7789, je nach Version) konfiguriert sein.
 
 ## Erläuterungen zur Implementierung
 

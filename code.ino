@@ -8,8 +8,8 @@
 #define TFT_BL 21
 
 // --- WiFi Konfiguration ---
-const char* ssid     = "ITWickede";
-const char* password = "23488351877477215763";
+const char* ssid     = "WLAN_SSID";
+const char* password = "WLAN_KENNWORT";
 
 TFT_eSPI tft = TFT_eSPI();
 // Wir nutzen ein kleineres Sprite NUR für die Uhrzeit, um RAM zu sparen

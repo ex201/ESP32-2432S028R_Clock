@@ -8,155 +8,172 @@
 #define TFT_BL 21
 
 // --- WiFi Konfiguration ---
-const char* ssid     = "DEINE_SSID";
-const char* password = "DEIN_PASSWORT";
+const char* ssid     = "WLAN_SSID";
+const char* password = "WLAN_KENNWORT";
 
-// --- API & Intervalle ---
-const char* weatherUrl = "http://api.brightsky.dev/current_weather?lat=51.48&lon=7.86";
-unsigned long lastWeatherUpdate = 0;
-const unsigned long weatherInterval = 15 * 60 * 1000; // 15 Min
-
-// --- Design (E-Paper Palette) ---
-#define EPAPER_CREME 0xF7BE // Warmer Hintergrund
-#define EPAPER_BLACK 0x0000 // Schrift & Linien
-
-// --- Objekte ---
 TFT_eSPI tft = TFT_eSPI();
-TFT_eSprite canvas = TFT_eSprite(&tft); // Double Buffer Sprite
+// Wir nutzen ein kleineres Sprite NUR für die Uhrzeit, um RAM zu sparen
+TFT_eSprite timeSprite = TFT_eSprite(&tft); 
 
-// Globaler Status
 float currentTemp = 0.0;
 bool weatherValid = false;
+unsigned long lastWeatherUpdate = 0;
+unsigned long lastRssiUpdate = 0;
 
-// --- Hilfsfunktion: Subnetz zu CIDR ---
+// --- 1. Hilfsfunktionen ---
+
 String getCIDR(IPAddress subnet) {
   uint32_t mask = (subnet[0] << 24) | (subnet[1] << 16) | (subnet[2] << 8) | subnet[3];
   int prefix = 0;
-  for (int i = 0; i < 32; i++) {
-    if ((mask << i) & 0x80000000) prefix++;
-  }
+  for (int i = 0; i < 32; i++) if ((mask << i) & 0x80000000) prefix++;
   return "/" + String(prefix);
 }
 
-// --- Optimierter Wetter-Abruf mit JSON-Filter ---
+void drawWiFiSignal(int x, int y) {
+  // Bereich oben rechts säubern (damit es keine "Reste" gibt)
+  // Anpassbar, falls du es enger/weiter haben willst
+  tft.fillRect(170, 0, 150, 35, 0xF7BE);
+  int32_t rssi = WiFi.RSSI();
+  int filledBars = 0;
+  if (rssi > -55) filledBars = 4;
+  else if (rssi > -65) filledBars = 3;
+  else if (rssi > -75) filledBars = 2;
+  else if (rssi > -85) filledBars = 1;
+
+  // Textwert links daneben
+  tft.setTextDatum(CR_DATUM);
+  tft.setTextColor(TFT_BLACK, 0xF7BE);
+  tft.drawString(String(rssi) + " dBm", x - 10, y + 8, 2);
+
+  // 4 Balken
+  for (int i = 0; i < 4; i++) {
+    int h = (i + 1) * 4;
+    int bx = x + (i * 6);
+    int by = y + (16 - h);
+    tft.drawRect(bx, by, 4, h, TFT_BLACK); // Umrandung
+    if (i < filledBars) {
+      tft.fillRect(bx, by, 4, h, TFT_BLACK); // Füllung
+    } else {
+      tft.fillRect(bx + 1, by + 1, 2, h - 2, 0xF7BE); // Leeren
+    }
+  }
+}
+
 void updateWeather() {
   if (WiFi.status() != WL_CONNECTED) return;
-
   HTTPClient http;
-  http.begin(weatherUrl);
-  
-  int httpCode = http.GET();
-  if (httpCode == HTTP_CODE_OK) {
-    // Filter erstellen: Nur "weather" -> "temperature" interessiert uns
-    JsonDocument filter;
-    filter["weather"]["temperature"] = true;
-
+  http.begin("http://api.brightsky.dev/current_weather?lat=51.48&lon=7.86");
+  if (http.GET() == 200) {
     JsonDocument doc;
-    deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
-    
-    if (doc["weather"].containsKey("temperature")) {
-      currentTemp = doc["weather"]["temperature"];
-      weatherValid = true;
-      Serial.printf("Wetter Update: %.1f °C\n", currentTemp);
-    }
-  } else {
-    Serial.printf("HTTP Fehler: %s\n", http.errorToString(httpCode).c_str());
+    deserializeJson(doc, http.getStream());
+    currentTemp = doc["weather"]["temperature"];
+    weatherValid = true;
   }
   http.end();
 }
 
 void setup() {
   Serial.begin(115200);
-
-  // 1. Display Hardware Setup
-  tft.init();
-  tft.setRotation(1);
+  
+  // Backlight sofort erzwingen
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
 
-  // 2. Sprite initialisieren (320x240 Pixel, 16-bit Farbe)
-  if (!canvas.createSprite(320, 240)) {
-    Serial.println("Sprite Fehler! Nicht genug RAM.");
-    while(1);
+  tft.init();
+  tft.setRotation(1);
+  tft.fillScreen(0xF7BE); // EPAPER_CREME
+
+  // Kleines Sprite für die Uhr (ca. 200x60 Pixel spart massiv RAM)
+  if (!timeSprite.createSprite(280, 90)) {
+    Serial.println("Sprite Fehler!");
   }
 
-  // 3. Verbindung & Zeit
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) { delay(500); }
 
-  // Berlin Timezone mit automatischer Sommerzeit
-  setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
-  tzset();
   configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "de.pool.ntp.org");
-
   updateWeather();
+  
+  // Einmaliges Zeichnen des statischen Layouts
+  drawStaticLayout();
 }
 
-void drawDisplay() {
-  // Hintergrund löschen
-  canvas.fillSprite(EPAPER_CREME);
-  canvas.setTextColor(EPAPER_BLACK, EPAPER_CREME);
+// --- 2. Haupt-Anzeige-Logik ---
 
-  // --- TOP SECTION: Network ---
-  canvas.setTextDatum(TL_DATUM);
-  canvas.setTextFont(2); // Kleine Standard-Schrift
-  String netInfo = WiFi.localIP().toString() + getCIDR(WiFi.subnetMask());
-  canvas.drawString(netInfo, 10, 8);
-
-  // WLAN Signalstärke
-  int rssi = WiFi.RSSI();
-  canvas.setTextDatum(TR_DATUM);
-  canvas.drawString(String(rssi) + " dBm", 310, 8);
+void drawStaticLayout() {
+  tft.setTextColor(TFT_BLACK, 0xF7BE);
+  tft.drawFastHLine(0, 35, 320, TFT_BLACK);
+  tft.drawFastHLine(0, 185, 320, TFT_BLACK);
   
-  // Design-Linie Oben
-  canvas.drawFastHLine(0, 35, 320, EPAPER_BLACK);
-
-  // --- MIDDLE SECTION: Clock ---
-  struct tm timeinfo;
-  if (getLocalTime(&timeinfo)) {
-    char timeStr[10];
-    strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo);
-    
-    canvas.setTextDatum(MC_DATUM);
-    // Font 7 ist der 7-Segment Font (Höhe ca. 48px)
-    canvas.drawString(timeStr, 160, 110, 7); 
-  }
-
-  // Design-Linie Unten
-  canvas.drawFastHLine(0, 180, 320, EPAPER_BLACK);
-
-  // --- BOTTOM SECTION: Date & Weather ---
-  char dateStr[32];
-  // Wochentag kurz + Tag + Monat
-  strftime(dateStr, sizeof(dateStr), "%a, %d. %b", &timeinfo);
-  
-  canvas.setTextDatum(BC_DATUM);
-  canvas.setTextFont(4); // Mittlere klare Schrift
-  canvas.drawString(dateStr, 160, 208);
-
-  if (weatherValid) {
-    // Temperatur groß
-    canvas.setTextDatum(BC_DATUM);
-    String t = String(currentTemp, 1) + " 'C"; // ' wird im Font oft als Grad genutzt oder händisch
-    canvas.setTextFont(4);
-    canvas.drawString(t, 160, 235);
-  }
-
-  // --- Push to Screen ---
-  canvas.pushSprite(0, 0);
+  // Oben links: IP Info (Statisch)
+  tft.setTextDatum(TL_DATUM);
+  tft.drawString(WiFi.localIP().toString(), 10, 10, 2);
+  drawWiFiSignal(270, 10);
 }
+
 
 void loop() {
-  // Nicht-blockierender Wetter-Update
-  if (millis() - lastWeatherUpdate >= weatherInterval) {
+  if (millis() - lastWeatherUpdate > 900000) {
     updateWeather();
     lastWeatherUpdate = millis();
+    drawDynamicData(); // Wetter-Update auf Screen
   }
 
-  // Display-Refresh alle 1 Sekunde für die Uhrzeit
-  static unsigned long lastDraw = 0;
-  if (millis() - lastDraw >= 1000) {
-    drawDisplay();
-    lastDraw = millis();
+  static int lastMin = -1;
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    if (timeinfo.tm_min != lastMin) {
+      lastMin = timeinfo.tm_min;
+      drawDynamicData();
+    }
+  }
+  // WLAN Signalstärke alle 10 Sekunden aktualisieren
+  if (millis() - lastRssiUpdate > 10000) {
+  lastRssiUpdate = millis();
+  drawWiFiSignal(270, 10); // Event auch 260 anstatt 270 falls zu weit rechts
+  }
+  delay(1000);
+}
+
+void drawDynamicData() {
+  // --- 1. UHRZEIT (Sprite) ---
+  timeSprite.fillSprite(0xF7BE);
+  timeSprite.setTextColor(TFT_BLACK, 0xF7BE);
+  
+  char timeStr[6];
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) return; // Sicherheitshalber abbrechen wenn Zeit nicht da
+  strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo);
+
+  timeSprite.setTextDatum(MC_DATUM);
+  timeSprite.setTextSize(2); // Doppelte Größe für Font 7
+  timeSprite.drawString(timeStr, 140, 45, 7); 
+  timeSprite.pushSprite(20, 65); // Positioniert die große Uhr mittig
+
+  // --- 2. FUSSZEILE: Datum & Wetter nebeneinander ---
+  // Bereich säubern
+  tft.fillRect(0, 187, 320, 53, 0xF7BE); 
+  tft.setTextColor(TFT_BLACK, 0xF7BE);
+
+  // Datum (Links-Bündig, Mitte der Zeile)
+  char dateStr[20];
+  strftime(dateStr, sizeof(dateStr), "%a, %d.%m.", &timeinfo);
+  tft.setTextDatum(CL_DATUM); // Centre Left
+  tft.drawString(dateStr, 20, 215, 4); 
+
+  // --- 3. TEMPERATUR (Rechts-Bündig, Mitte der Zeile) ---
+  if (weatherValid) {
+    String tempStr = String(currentTemp, 1) + "  C"; // Zwei Leerzeichen vor dem C für das Symbol
+    tft.setTextDatum(CR_DATUM); // Centre Right
+    tft.drawString(tempStr, 305, 215, 4);
+
+    // Präzise Berechnung für das Grad-Symbol:
+    // Wir messen die Breite des " C" Teils, um den Kreis davor zu setzen
+    int cWidth = tft.textWidth(" C", 4);
+    int totalWidth = tft.textWidth(tempStr, 4);
+    
+    // Position: Rechte Kante (305) minus ein Teil der Breite
+    int circleX = 305 - cWidth + 2; 
+    tft.drawCircle(circleX, 204, 2, TFT_BLACK); 
   }
 }
